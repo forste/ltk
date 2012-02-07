@@ -212,6 +212,7 @@ notebookInsertOrdered nb widget labelStr mbLabel isGroup = do
     liftIO $ do
         markLabel nb labelBox False
         realPos     <-  notebookInsertPageMenu nb widget labelBox menuLabel pos
+        notebookSetTabReorderable nb widget True
         widgetShowAll labelBox
         notebookSetCurrentPage nb realPos
 
@@ -249,13 +250,15 @@ mkLabelBox lbl paneName = do
         boxPackEnd innerBox tabButton PackNatural 0
 
         containerAdd labelBox innerBox
-        dragSourceSet labelBox [Button1] [ActionCopy,ActionMove]
-        tl        <- targetListNew
-        targetListAddTextTargets tl 0
-        dragSourceSetTargetList labelBox tl
-        on labelBox dragDataGet (\ cont id timeStamp -> do
-            selectionDataSetText paneName
-            return ())
+
+--        dragSourceSet labelBox [Button1] [ActionCopy,ActionMove]
+--        tl        <- targetListNew
+--        targetListAddTextTargets tl 0
+--        dragSourceSetTargetList labelBox tl
+--        on labelBox dragDataGet (\ cont id timeStamp -> do
+--            selectionDataSetText paneName
+--            return ())
+
         return (tabButton,labelBox)
     cl <- runInIO closeHandler
     liftIO $ onClicked tb (cl ())
