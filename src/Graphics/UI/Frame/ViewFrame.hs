@@ -20,7 +20,7 @@
 --
 ---------------------------------------------------------------------------------
 
-
+{-# LANGUAGE FlexibleContexts #-}
 module Graphics.UI.Frame.ViewFrame (
     removePaneAdmin
 ,   addPaneAdmin
@@ -195,8 +195,9 @@ notebookInsertOrdered :: PaneMonad alpha => (NotebookClass self, WidgetClass chi
     -> String
     -> Maybe Label	-- the label for the page as String or Label
     -> Bool
+    -> Maybe Int
     -> alpha ()
-notebookInsertOrdered nb widget labelStr mbLabel isGroup = do
+notebookInsertOrdered nb widget labelStr mbLabel isGroup mbPos = do
     label	    <-  case mbLabel of
                         Nothing  -> liftIO $ labelNew (Just labelStr)
                         Just l  -> return l
@@ -205,10 +206,15 @@ notebookInsertOrdered nb widget labelStr mbLabel isGroup = do
     mbWidgets   <-  liftIO $ mapM (notebookGetNthPage nb) [0 .. (numPages-1)]
     let widgets =   map (\v -> forceJust v "ViewFrame.notebookInsertOrdered: no widget") mbWidgets
     labelStrs   <-  liftIO $ mapM widgetGetName widgets
-    let pos     =   case findIndex (\ s -> withoutGroupPrefix s > withoutGroupPrefix labelStr) labelStrs of
-                        Just i  ->  i
-                        Nothing ->  -1
-    labelBox    <-  if isGroup then groupLabel labelStr else mkLabelBox label labelStr
+    let pos     =   case mbPos of
+                        Just p -> p
+                        Nothing ->
+                            case findIndex (\ s -> withoutGroupPrefix s > withoutGroupPrefix
+                                                labelStr)
+                                           labelStrs of
+                                        Just i  ->  i
+                                        Nothing ->  -1
+    labelBox    <-  if isGroup then groupLabel (toNotebook nb) labelStr else mkLabelBox (toNotebook nb) label labelStr
     liftIO $ do
         markLabel nb labelBox False
         realPos     <-  notebookInsertPageMenu nb widget labelBox menuLabel pos
@@ -217,8 +223,9 @@ notebookInsertOrdered nb widget labelStr mbLabel isGroup = do
         notebookSetCurrentPage nb realPos
 
 -- | Returns a label box
-mkLabelBox :: PaneMonad alpha => Label -> String -> alpha EventBox
-mkLabelBox lbl paneName = do
+mkLabelBox :: PaneMonad alpha => Notebook -> Label -> String -> alpha EventBox
+mkLabelBox nb lbl paneName = do
+    func <- runInIO move'
     (tb,lb) <- liftIO $ do
         miscSetAlignment (castToMisc lbl) 0.0 0.0
         miscSetPadding  (castToMisc lbl) 0 0
@@ -251,13 +258,17 @@ mkLabelBox lbl paneName = do
 
         containerAdd labelBox innerBox
 
---        dragSourceSet labelBox [Button1] [ActionCopy,ActionMove]
---        tl        <- targetListNew
---        targetListAddTextTargets tl 0
---        dragSourceSetTargetList labelBox tl
---        on labelBox dragDataGet (\ cont id timeStamp -> do
---            selectionDataSetText paneName
---            return ())
+        --drag&drop
+        dragSourceSet labelBox [Button1] [ActionCopy,ActionMove]
+        tl        <- targetListNew
+        targetListAddTextTargets tl 0
+        dragSourceSetTargetList labelBox tl
+        on labelBox dragDataGet (\ cont id timeStamp -> do
+            selectionDataSetText paneName
+            return ())
+        dragDestSet labelBox [DestDefaultAll] [ActionCopy, ActionMove]
+        dragDestSetTargetList labelBox tl
+        on labelBox dragDataReceived (dragFunc nb $ func)
 
         return (tabButton,labelBox)
     cl <- runInIO closeHandler
@@ -273,13 +284,29 @@ mkLabelBox lbl paneName = do
                                     (PaneC pane) <- paneFromName paneName
                                     closePane pane
                                     return ()
+        dragFunc :: Notebook
+                    -> ((PaneName,Notebook) -> IO ())
+                    -> DragContext
+                    -> Point
+                    -> InfoId
+                    -> TimeStamp
+                    -> SelectionDataM ()
+        dragFunc nb func context point id timeStamp = do
+            mbText <- selectionDataGetText
+            liftIO $ putStrLn $ "Label received data :" ++ (fromMaybe "No data" mbText)
+            let mbWidget = dragGetSourceWidget context
+            case mbText of
+                Nothing -> return ()
+                Just str -> do
+                    liftIO $ func (str,nb)
+                    return ()
 
-groupLabel :: PaneMonad beta => String -> beta EventBox
-groupLabel group = do
+groupLabel :: PaneMonad beta => Notebook -> String -> beta EventBox
+groupLabel nb group = do
     label <- liftIO $ labelNew Nothing
     liftIO $ labelSetUseMarkup label True
     liftIO $ labelSetMarkup label ("<b>" ++ group ++ "</b>")
-    labelBox <- mkLabelBox label (groupPrefix ++ group)
+    labelBox <- mkLabelBox nb label (groupPrefix ++ group)
     liftIO $ widgetShowAll labelBox
     return labelBox
 
@@ -444,7 +471,7 @@ viewSplit' panePath dir = do
                                     | otherwise                -> liftIO $ panedPack2 (castToPaned parent) np True True
                                 (GroupP group:_, Just n) -> do
                                     liftIO $ notebookInsertPage ((castToNotebook' "viewSplit' 2") parent) np group n
-                                    label <- groupLabel group
+                                    label <- groupLabel ((castToNotebook' "viewSplit' 2") parent) group
                                     liftIO $ notebookSetTabLabel ((castToNotebook' "viewSplit' 3") parent) np label
                                     label2 <- groupMenuLabel group
                                     liftIO $ notebookSetMenuLabel ((castToNotebook' "viewSplit' 4") parent) np label2
@@ -555,7 +582,7 @@ viewCollapse' panePath = trace "viewCollapse' called" $ do
                                                             liftIO $ panedPack2 (castToPaned grandparent) activeNotebook True True
                                                         (GroupP group, Just n) -> do
                                                             liftIO $ notebookInsertPage ((castToNotebook' "viewCollapse'' 2") grandparent) activeNotebook group n
-                                                            label <- groupLabel group
+                                                            label <- groupLabel ((castToNotebook' "viewCollapse'' 2") grandparent) group
                                                             liftIO $ do
                                                                 notebookSetTabLabel ((castToNotebook' "viewCollapse'' 3") grandparent) activeNotebook label
                                                                 notebookSetCurrentPage ((castToNotebook' "viewCollapse'' 4") grandparent) n
@@ -676,7 +703,7 @@ viewNest' panePath group = do
                 (TerminalP {}) -> do
                     nb <- newNotebook (panePath ++ [GroupP group])
                     liftIO $ widgetSetName nb (groupPrefix ++ group)
-                    notebookInsertOrdered activeNotebook nb group Nothing True
+                    notebookInsertOrdered activeNotebook nb group Nothing True Nothing
                     liftIO $ widgetShowAll nb
                         --widgetGrabFocus activeNotebook
                     handleFunc <-  runInIO (handleNotebookSwitch nb)
@@ -781,7 +808,7 @@ handleReattach windowId window _ = do
             setWindowsSt $ delete window windows
             case last pp of
                 GroupP groupName -> do
-                    label <- groupLabel groupName
+                    label <- groupLabel nb groupName
                     liftIO $ notebookSetTabLabel ((castToNotebook' "handleReattach") parent) nb label
                 otherwise       -> return ()
             return False -- "now destroy the window"
@@ -888,8 +915,12 @@ move' (paneName,toNB) = do
                                     Nothing ->  trace "ViewFrame>>move': group notebook not found" return ()
                                     Just num -> do
                                         liftIO $ notebookRemovePage fromNB num
-                                        label <- groupLabel group
-                                        notebookInsertOrdered toNB groupNBOrPaned group Nothing True
+                                        label <- groupLabel toNB group
+
+                                        togroupNBOrPaned <- getNotebookOrPaned toPath castToWidget
+                                        mbToNum <- liftIO $ notebookPageNum toNB togroupNBOrPaned
+
+                                        notebookInsertOrdered toNB groupNBOrPaned group Nothing True mbToNum
                                         liftIO $ notebookSetTabLabel toNB groupNBOrPaned label
                                         adjustPanes fromPath (toPath ++ [GroupP group])
                                         adjustLayoutForGroupMove fromPath toPath group
@@ -916,7 +947,10 @@ move' (paneName,toNB) = do
                                             Nothing ->  trace "ViewFrame>>move': widget not found" return ()
                                             Just num -> do
                                                 liftIO $ notebookRemovePage fromNB num
-                                                notebookInsertOrdered toNB child paneName Nothing False
+
+                                                togroupNBOrPaned <- getNotebookOrPaned toPath castToWidget
+                                                mbToNum <- liftIO $ notebookPageNum toNB togroupNBOrPaned
+                                                notebookInsertOrdered toNB child paneName Nothing False mbToNum
                                                 let paneMap1    =   Map.delete paneName paneMap
                                                 setPaneMapSt    $   Map.insert paneName (toPath,cid) paneMap1
 
@@ -1021,6 +1055,7 @@ newNotebook pp = do
             (SelectionDataM ())
         dragFunc nb func cont point id timeStamp = do
             mbText <- selectionDataGetText
+            liftIO $ putStrLn $ "Notebook received data :" ++ (fromMaybe "No data" mbText)
             case mbText of
                 Nothing -> return ()
                 Just str -> do
